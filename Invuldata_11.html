@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Elektrische Verwarming</title>
+<style>
+body { font-family: Arial, sans-serif; margin:18px; background:#f8f8f8; color:#222; }
+h1 { text-align:center; margin-bottom:10px; }
+.top { background:white; padding:10px; border:1px solid #ddd; margin-bottom:10px; }
+.row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+label { font-size:13px; }
+input[type="date"], input[type="number"], .small { height:28px; padding:4px; font-size:13px; }
+textarea { height:26px; resize:vertical; overflow:auto; font-size:13px; padding:4px; width:100%; white-space:nowrap; }
+table { width:100%; border-collapse:collapse; background:white; font-size:13px; }
+th, td { border:1px solid #ddd; padding:6px 4px; text-align:center; white-space:nowrap; }
+th { background:#f1f1f1; font-weight:600; }
+input.incell { width:100%; box-sizing:border-box; padding:4px; font-size:13px; text-align:center; }
+.controls { margin-top:8px; display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+button { border:none; padding:6px 12px; margin:3px; border-radius:4px; cursor:pointer; color:white; font-size:13px; }
+button:hover { opacity:0.85; }
+#saveBtn { background-color:#4CAF50; }
+#loadBtn { background-color:#ff9800; }
+#newDayBtn { background-color:#2196F3; }
+#delDayBtn, #clearAllBtn { background-color:#f44336; }
+#exportBtn { background-color:#ffeb3b; color:#000; }
+#importBtn { background-color:#607D8B; }
+.note-label { min-width:110px; }
+.foot { margin-top:10px; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+.muted { color:#666; font-size:13px; }
+</style>
+</head>
+<body>
+<h1>Elektrische Verwarming</h1>
+
+<div class="top">
+  <div class="row wide">
+    <label class="note-label">Bijzonderheden (notities):</label>
+    <textarea id="noteField" rows="2" placeholder=""></textarea>
+  </div>
+
+  <div class="row" style="margin-top:8px;">
+    <label>Datum:</label>
+    <input type="date" id="dayDate" class="small">
+
+    <label>kWh-prijs (€):</label>
+    <input type="number" id="kwPrice" step="0.000001" class="small" value="0.000000">
+
+    <div style="margin-left:12px;" class="muted">
+      <div>Totaal kWh t/m gisteren: <strong id="cumKwh">0.00</strong></div>
+      <div>Totaal € t/m gisteren: <strong id="cumEur">0.00</strong></div>
+    </div>
+  </div>
+</div>
+
+<table id="dataTable">
+<thead>
+<tr>
+<th style="width:120px">Tijd</th>
+<th style="width:80px">Buiten °C</th>
+<th style="width:80px">Binnen °C</th>
+<th style="width:100px">kWh verbruik</th>
+<th style="width:120px">Kosten (€)</th>
+</tr>
+</thead>
+<tbody id="tableBody"></tbody>
+</table>
+
+<div class="foot">
+  <div class="muted">
+    Dag totaal kWh: <strong id="dayKwh">0.00</strong> &nbsp;&nbsp; | &nbsp;&nbsp;
+    Dag totaal €: <strong id="dayEur">0.00</strong>
+  </div>
+
+  <div class="controls">
+    <button id="saveBtn" onclick="saveDay()">💾 Opslaan</button>
+    <button id="loadBtn" onclick="loadSelectedDay()">📂 Laden</button>
+    <button id="newDayBtn" onclick="newDay()">🆕 Nieuwe dag</button>
+    <button id="delDayBtn" onclick="deleteDay()">🗑️ Verwijder deze dag</button>
+    <button id="clearAllBtn" onclick="clearAllDays()">⚠️ Alles wissen</button>
+    <button id="exportBtn" onclick="exportCSV()">📤 Export CSV</button>
+    <button id="importBtn">⬆️ Import CSV</button>
+
+    <label style="margin-left:8px;">Opgeslagen dagen:</label>
+    <select id="dayList" style="min-width:140px;"></select>
+  </div>
+</div>
+
+<input type="file" id="fileInput" accept=".csv,text/csv" style="display:none;">
+
+<script>
+/* Variabelen bovenaan */
+let storagePrefix="verwarming_";
+let prijsStoredKey="kw_prijs";
+let kwPrice=0.0;
+let dayData=null;
+let tableBodyEl=null;
+let dayListEl=null;
+let noteFieldEl=null;
+let cumKwhEl=null;
+let cumEurEl=null;
+let dayKwhEl=null;
+let dayEurEl=null;
+let dayDateEl=null;
+let kwPriceEl=null;
+
+/* Helpers */
+function format2(v){return Number.isFinite(v)?v.toFixed(2):"0.00";}
+function format6(v){return Number.isFinite(v)?v.toFixed(6):"0.000000";}
+function parseNum(v){let n=parseFloat(String(v).replace(",", "."));return Number.isFinite(n)?n:0;}
+function isoKeyForDate(d){return storagePrefix+d;}
+
+/* Init */
+window.addEventListener("DOMContentLoaded",function(){
+  tableBodyEl=document.getElementById("tableBody");
+  dayListEl=document.getElementById("dayList");
+  noteFieldEl=document.getElementById("noteField");
+  cumKwhEl=document.getElementById("cumKwh");
+  cumEurEl=document.getElementById("cumEur");
+  dayKwhEl=document.getElementById("dayKwh");
+  dayEurEl=document.getElementById("dayEur");
+  dayDateEl=document.getElementById("dayDate");
+  kwPriceEl=document.getElementById("kwPrice");
+
+  let storedPrice=localStorage.getItem(prijsStoredKey);
+  if(storedPrice!==null){kwPrice=parseNum(storedPrice); kwPriceEl.value=format6(kwPrice);} 
+  else {kwPrice=parseNum(kwPriceEl.value); localStorage.setItem(prijsStoredKey,format6(kwPrice));}
+
+  refreshDayList();
+  createRow();
+  updateDayTotalsDisplay();
+});
+
+/* Row creation */
+function createRow(values){
+  if(!values) values=["","","","",""];
+  let r=document.createElement("tr");
+  for(let c=0;c<5;c++){
+    let td=document.createElement("td");
+    if(c<4){
+      let inp=document.createElement("input");
+      inp.type="text"; inp.className="incell"; inp.value=values[c]||"";
+      inp.addEventListener("input",onCellInput);
+      inp.addEventListener("change",onCellInput);
+      if(c===0) inp.placeholder="uu:mm";
+      if(c===3) inp.placeholder="kWh";
+      td.appendChild(inp);
+    } else {
+      let inp=document.createElement("input"); inp.type="text"; inp.className="incell"; inp.readOnly=true;
+      inp.value=values[4]||""; td.appendChild(inp);
+    }
+    r.appendChild(td);
+  }
+  tableBodyEl.appendChild(r);
+  return r;
+}
+
+function onCellInput(){recalcRowCosts();autoAddRowIfNeeded();updateDayTotalsDisplay();}
+
+function recalcRowCosts(){
+  let usePrice=parseNum(kwPriceEl.value);
+  let rows=tableBodyEl.children;
+  for(let r=0;r<rows.length;r++){
+    try{
+      let inputs=rows[r].querySelectorAll("input");
+      let kw=parseNum(inputs[3].value);
+      let kosten=kw*usePrice;
+      inputs[4].value=format2(kosten);
+    }catch(e){}
+  }
+}
+
+function autoAddRowIfNeeded(){
+  let rows=tableBodyEl.children;
+  if(rows.length===0){createRow(); return;}
+  let last=rows[rows.length-1];
+  let inputs=last.querySelectorAll("input");
+  let filled=true;
+  for(let i=0;i<4;i++){if(!inputs[i].value || inputs[i].value.trim()===""){filled=false; break;}}
+  if(filled) createRow();
+}
+
+/* Dag totaal = laatste regel met kWh>0 */
+function sumDay(){
+  let rows=tableBodyEl.children;
+  for(let r=rows.length-1;r>=0;r--){
+    let inputs=rows[r].querySelectorAll("input");
+    let kw=parseNum(inputs[3].value);
+    if(kw>0){
+      let price=parseNum(kwPriceEl.value);
+      return {kwh:kw,eur:kw*price};
+    }
+  }
+  return {kwh:0,eur:0};
+}
+
+function updateDayTotalsDisplay(){
+  let sums=sumDay();
+  dayKwhEl.textContent=format2(sums.kwh);
+  dayEurEl.textContent=format2(sums.eur);
+
+  /* Cumulatief totaal t/m gisteren */
+  let totalKwh=0,totalEur=0;
+  Object.keys(localStorage).forEach(k=>{
+    if(k.startsWith(storagePrefix)){
+      let d=JSON.parse(localStorage.getItem(k));
+      if(d.date!==dayDateEl.value){ /* alleen voorgaande dagen */
+        let lastRow=null;
+        for(let i=d.rows.length-1;i>=0;i--){
+          if(parseNum(d.rows[i][3])>0){lastRow=d.rows[i]; break;}
+        }
+        if(lastRow){
+          totalKwh+=parseNum(lastRow[3]);
+          totalEur+=parseNum(lastRow[4]);
+        }
+      }
+    }
+  });
+  cumKwhEl.textContent=format2(totalKwh);
+  cumEurEl.textContent=format2(totalEur);
+}
+
+/* Save / Load */
+function saveDay(){
+  if(!dayDateEl.value){alert("Selecteer eerst een datum"); return;}
+  let rows=[];
+  tableBodyEl.querySelectorAll("tr").forEach(tr=>{
+    let r=[];
+    tr.querySelectorAll("input").forEach(inp=>r.push(inp.value));
+    rows.push(r);
+  });
+  let data={
+    date: dayDateEl.value,
+    note: noteFieldEl.value,
+    prijs: format6(parseNum(kwPriceEl.value)),
+    rows: rows
+  };
+  localStorage.setItem(isoKeyForDate(dayDateEl.value),JSON.stringify(data));
+  refreshDayList();
+  updateDayTotalsDisplay();
+  alert("Dag opgeslagen!");
+}
+
+function refreshDayList(){
+  dayListEl.innerHTML="";
+  let keys=Object.keys(localStorage).filter(k=>k.startsWith(storagePrefix)).sort();
+  keys.forEach(k=>{
+    let opt=document.createElement("option");
+    opt.value=k; opt.text=k.replace(storagePrefix,"");
+    dayListEl.appendChild(opt);
+  });
+}
+
+function loadSelectedDay(){
+  if(!dayListEl.value) return;
+  let data=JSON.parse(localStorage.getItem(dayListEl.value));
+  if(!data) return;
+  dayData=data;
+  dayDateEl.value=data.date;
+  noteFieldEl.value=data.note||"";
+  kwPriceEl.value=data.prijs||"0.000000";
+  tableBodyEl.innerHTML="";
+  data.rows.forEach(r=>createRow(r));
+  autoAddRowIfNeeded();
+  updateDayTotalsDisplay();
+}
+
+function newDay(){
+  dayData=null;
+  tableBodyEl.innerHTML="";
+  createRow();
+  noteFieldEl.value="";
+  dayDateEl.value="";
+  updateDayTotalsDisplay();
+}
+
+function deleteDay(){
+  if(!dayDateEl.value){alert("Selecteer eerst een datum"); return;}
+  if(localStorage.getItem(isoKeyForDate(dayDateEl.value))){
+    if(confirm("Weet je zeker dat je deze dag wilt verwijderen? Er wordt eerst een CSV-backup gemaakt.")){
+      exportCSV(dayDateEl.value+"_backup.csv");
+      localStorage.removeItem(isoKeyForDate(dayDateEl.value));
+      alert("Dag verwijderd!");
+      newDay();
+      refreshDayList();
+    }
+  }
+}
+
+function clearAllDays(){
+  if(confirm("Weet je zeker dat je alle dagen wilt verwijderen? Er wordt eerst een volledige CSV-backup gemaakt.")){
+    exportCSV("alles_backup.csv");
+    Object.keys(localStorage).forEach(k=>{if(k.startsWith(storagePrefix)) localStorage.removeItem(k);});
+    newDay();
+    refreshDayList();
+  }
+}
+
+/* Export CSV */
+function exportCSV(filename){
+  filename=filename||"verwarming.csv";
+  let csv="Datum,Notities,Tijd,Buiten °C,Binnen °C,kWh,€\n";
+  Object.keys(localStorage).filter(k=>k.startsWith(storagePrefix)).sort().forEach(k=>{
+    let d=JSON.parse(localStorage.getItem(k));
+    d.rows.forEach(r=>{
+      csv+=`"${d.date}","${d.note}","${r[0]}","${r[1]}","${r[2]}","${r[3]}","${r[4]}"\n`;
+    });
+  });
+  let blob=new Blob([csv],{type:"text/csv;charset=utf-8;"});
+  let url=URL.createObjectURL(blob);
+  let a=document.createElement("a");
+  a.href=url;
+  a.download=filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ---------------- CSV IMPORT ---------------- */
+const fileInput=document.getElementById("fileInput");
+const importBtn=document.getElementById("importBtn");
+importBtn.addEventListener("click",()=>fileInput.click());
+
+fileInput.addEventListener("change", function(event){
+  const file=event.target.files[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=function(e){
+    const text=e.target.result.split(/\r?\n/);
+    if(text.length<2){ alert("CSV lijkt leeg."); return; }
+    let added=0;
+    for(let i=1;i<text.length;i++){
+      if(!text[i].trim()) continue;
+      const cols=text[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+      const row=cols.map(c=>c.replace(/^"|"$/g,"").replace(/""/g,'"'));
+      const date=row[0]; const note=row[1]; const time=row[2]; const outside=row[3];
+      const inside=row[4]; const kwh=row[5]; const eur=row[6];
+      const key=isoKeyForDate(date);
+      let obj=localStorage.getItem(key);
+      if(obj){ 
+        obj=JSON.parse(obj); 
+        if(!obj.rows) obj.rows=[];
+        obj.rows.push([time,outside,inside,kwh,eur]);
+        obj.note=note; obj.prijs=kwPriceEl.value;
+      } else {
+        obj={date:date,note:note,prijs:kwPriceEl.value,rows:[[time,outside,inside,kwh,eur]]};
+      }
+      localStorage.setItem(key,JSON.stringify(obj));
+      added++;
+    }
+    refreshDayList();
+    alert(added+" rijen toegevoegd/geladen uit CSV.");
+  };
+  reader.readAsText(file);
+  event.target.value="";
+});
+</script>
+</body>
+</html>
